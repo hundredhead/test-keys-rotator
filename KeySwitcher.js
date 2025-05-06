@@ -1027,8 +1027,33 @@ async function redrawProviderUI(provider, data) {
     });
     addNewSetButton.style.marginTop = "10px";
     dynamicContainer.appendChild(addNewSetButton);
+    
+// --- START: Error Code Actions UI (Minimal Placeholder) --- [ADDED IN THIS STEP]
+try { // Add a try...catch block for extra safety during addition
+    const errorActionsSection = document.createElement("div");
+    errorActionsSection.id = `keyswitcher-error-actions-${provider.secret_key}`; // Use provider here
+    errorActionsSection.style.marginTop = "20px";
+    errorActionsSection.style.border = "1px dashed #888";
+    errorActionsSection.style.borderRadius = "4px";
+    errorActionsSection.style.padding = "10px";
+    errorActionsSection.style.color = "#aaa";// Simple placeholder text
+errorActionsSection.textContent = "[Error Code Actions UI will be added here]";
 
-    // NOTE: Placeholder for Error Code Actions UI has been removed for this diagnostic step.
+// Append this minimal placeholder to the main dynamic container
+dynamicContainer.appendChild(errorActionsSection);
+console.log(`KeySwitcher: Successfully appended minimal error action placeholder for ${provider.name}`); // Confirmation log
+} catch (placeholderError) {
+    console.error(`KeySwitcher: *** ERROR adding minimal error action placeholder for ${provider?.name}:`, placeholderError);
+    // Optionally add a visible warning in the UI itself
+    if(dynamicContainer){
+         const errorMsgDiv = document.createElement('div');
+         errorMsgDiv.textContent = `Error adding Error Code Actions placeholder for ${provider?.name}. See console.`;
+         errorMsgDiv.style.color = 'red';
+         errorMsgDiv.style.marginTop = '10px';
+         dynamicContainer.appendChild(errorMsgDiv);
+    }
+}
+// --- END: Error Code Actions UI (Minimal Placeholder) ---
 
 } // --- End of redrawProviderUI function ---
 
