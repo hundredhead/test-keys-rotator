@@ -650,7 +650,11 @@ async function updateProviderInfoPanel(provider, data) {
  * @param {object} data The current structured data object for this provider (from loadSetData).
  */
 async function redrawProviderUI(provider, data) {
-    const dynamicContainerId = `keyswitcher-sets-dynamic-${provider.secret_key}`;
+    // --- DIAGNOSTIC LOG ADDED ---
+    console.log(`KeySwitcher: redrawProviderUI called for provider:`, provider?.name, `| secret_key:`, provider?.secret_key, `| Is provider defined?`, !!provider);
+    // -----------------------------
+
+    const dynamicContainerId = `keyswitcher-sets-dynamic-${provider.secret_key}`; // This uses provider
     const dynamicContainer = document.getElementById(dynamicContainerId);
     if (!dynamicContainer) {
         console.error(`KeySwitcher: Dynamic container not found for ${provider.name} (ID: ${dynamicContainerId})`);
@@ -661,11 +665,16 @@ async function redrawProviderUI(provider, data) {
     dynamicContainer.innerHTML = '';
 
     // --- Recycle Bin UI ---
-    // Remove previous recycle bin if any
-    const oldBin = document.getElementById(`keyswitcher-recycle-bin-${provider.secret_key}`);
-    if (oldBin) oldBin.remove();
+    const oldBinId = `keyswitcher-recycle-bin-${provider.secret_key}`; // This uses provider
+    const oldBin = document.getElementById(oldBinId);
+    if (oldBin && dynamicContainer.contains(oldBin)) { // Check parent before removing
+        oldBin.remove();
+    } else if (oldBin) {
+        console.warn(`KeySwitcher: Found old recycle bin (ID: ${oldBinId}), but it was not inside the dynamic container. Not removing.`);
+    }
+
     const recycleBinSection = document.createElement("div");
-    recycleBinSection.id = `keyswitcher-recycle-bin-${provider.secret_key}`;
+    recycleBinSection.id = oldBinId;
     recycleBinSection.style.marginBottom = "18px";
     recycleBinSection.style.padding = "8px";
     recycleBinSection.style.border = "1px dashed #b44";
@@ -682,34 +691,33 @@ async function redrawProviderUI(provider, data) {
     recycleHeader.title = "Click to collapse/expand";
     recycleBinSection.appendChild(recycleHeader);
 
-    // Collapsible logic
-    // --- Collapsible state persistence ---
-    const collapseKey = `keyswitcher-recycle-collapsed-${provider.secret_key}`;
-    let recycleCollapsed = localStorage.getItem(collapseKey) !== 'false'; // default true (collapsed)
+    const collapseKey = `keyswitcher-recycle-collapsed-${provider.secret_key}`; // This uses provider
+    let recycleCollapsed = localStorage.getItem(collapseKey) !== 'false';
     const binContent = document.createElement("div");
     binContent.style.display = recycleCollapsed ? "none" : "block";
     recycleHeader.onclick = () => {
         recycleCollapsed = !recycleCollapsed;
-        localStorage.setItem(collapseKey, recycleCollapsed);
+        localStorage.setItem(collapseKey, recycleCollapsed ? 'true' : 'false');
         binContent.style.display = recycleCollapsed ? "none" : "block";
     };
 
     recycleBinSection.appendChild(binContent);
 
-    // Load and render bin
-    const recycleBin = loadRecycleBin(provider);
+    const recycleBin = loadRecycleBin(provider); // This uses provider
     if (recycleBin.length === 0) {
         const empty = document.createElement("div");
         empty.textContent = "Recycle bin is empty.";
         empty.style.fontStyle = "italic";
         binContent.appendChild(empty);
     } else {
-        recycleBin.forEach((entry, idx) => {
+         recycleBin.sort((a, b) => new Date(b.removedAt) - new Date(a.removedAt));
+         recycleBin.forEach((entry, binIndex) => {
             const row = document.createElement("div");
             row.style.display = "flex";
             row.style.flexDirection = "column";
             row.style.borderBottom = "1px solid #a44";
             row.style.padding = "5px 0";
+            row.style.marginBottom = "5px";
 
             const keyRow = document.createElement("div");
             keyRow.textContent = entry.key;
@@ -718,48 +726,83 @@ async function redrawProviderUI(provider, data) {
             keyRow.style.background = "#1a1a1a";
             keyRow.style.color = "#e0c0c0";
             keyRow.style.padding = "2px 6px";
-            keyRow.style.marginBottom = "2px";
+            keyRow.style.marginBottom = "3px";
+            keyRow.style.borderRadius = "3px";
             row.appendChild(keyRow);
 
             const meta = document.createElement("div");
             meta.style.fontSize = "0.85em";
             meta.style.color = "#b88";
             meta.textContent =
-                `Set: ${entry.set} | Reason: ${entry.reason} | Removed: ${new Date(entry.removedAt).toLocaleString()}`;
+                `Set: ${entry.set || 'N/A'} | Reason: ${entry.reason || 'N/A'} | Removed: ${new Date(entry.removedAt).toLocaleString()}`;
             row.appendChild(meta);
 
             const btnRow = document.createElement("div");
             btnRow.style.display = "flex";
             btnRow.style.gap = "8px";
-            btnRow.style.marginTop = "2px";
+            btnRow.style.marginTop = "4px";
+
             const restoreBtn = createButton("Restore", async () => {
-                // Restore to active set
-                const loadedSecrets = await getSecrets();
-                const d = loadSetData(provider, loadedSecrets);
-                const setIdx = d.sets.findIndex(s => s.name === entry.set);
-                if (setIdx !== -1) {
-                    d.sets[setIdx].keys += (d.sets[setIdx].keys ? "\n" : "") + entry.key;
-                    await saveSetData(provider, d);
-                    // Remove from bin
-                    const bin = loadRecycleBin(provider);
-                    bin.splice(idx, 1);
-                    saveRecycleBin(provider, bin);
-                    // Persist collapse state and force open after redraw
-                    localStorage.setItem(collapseKey, 'false');
-                    await redrawProviderUI(provider, d);
-                    await updateProviderInfoPanel(provider, d);
-                } else {
-                    alert("Original set not found. Key cannot be restored.");
+                const currentBin = loadRecycleBin(provider); // Uses provider
+                const entryToRestoreIndex = currentBin.findIndex(item => item.key === entry.key && item.removedAt === entry.removedAt);
+                if (entryToRestoreIndex === -1) {
+                    alert("Error: Could not find the key entry in the recycle bin storage. Cannot restore.");
+                    return;
                 }
+                const entryToRestore = currentBin[entryToRestoreIndex];
+                const loadedSecrets = await getSecrets();
+                const currentData = loadSetData(provider, loadedSecrets); // Uses provider
+                let targetSetIndex = currentData.sets.findIndex(s => s.name === entryToRestore.set);
+                let targetSetName = entryToRestore.set;
+                if (targetSetIndex === -1) {
+                    targetSetIndex = currentData.activeSetIndex;
+                     if (targetSetIndex < 0 || targetSetIndex >= currentData.sets.length) {
+                         alert("Restore failed: Original set not found and no valid active set exists.");
+                         return;
+                     }
+                     targetSetName = currentData.sets[targetSetIndex].name;
+                     console.warn(`KeySwitcher: Original set '${entryToRestore.set}' not found. Restoring key to currently active set '${targetSetName}'.`);
+                     toastr.info(`Original set '${entryToRestore.set}' not found. Restored to active set '${targetSetName}'.`);
+                }
+                const targetSetKeys = splitKeys(currentData.sets[targetSetIndex].keys);
+                if (!targetSetKeys.includes(entryToRestore.key)) {
+                    targetSetKeys.push(entryToRestore.key);
+                    currentData.sets[targetSetIndex].keys = targetSetKeys.join('\n');
+                    await saveSetData(provider, currentData); // Uses provider
+                    console.log(`KeySwitcher: Key '${entryToRestore.key}' restored to set '${targetSetName}'.`);
+                     toastr.success(`Key '${entryToRestore.key.substring(0, 8)}...' restored to set '${targetSetName}'.`);
+                } else {
+                     console.log(`KeySwitcher: Key '${entryToRestore.key}' already exists in set '${targetSetName}'. Not adding duplicate.`);
+                     toastr.info(`Key '${entryToRestore.key.substring(0, 8)}...' already exists in set '${targetSetName}'.`);
+                 }
+                currentBin.splice(entryToRestoreIndex, 1);
+                saveRecycleBin(provider, currentBin); // Uses provider
+                localStorage.setItem(collapseKey, 'false');
+                const finalSecrets = await getSecrets() || {};
+                const finalData = loadSetData(provider, finalSecrets); // Uses provider
+                await updateProviderInfoPanel(provider, finalData); // Uses provider
+                await redrawProviderUI(provider, finalData); // Uses provider
             });
             btnRow.appendChild(restoreBtn);
-            const deleteBtn = createButton("Delete Permanently", () => {
-                const bin = loadRecycleBin(provider);
-                bin.splice(idx, 1);
-                saveRecycleBin(provider, bin);
-                // Persist collapse state and force open after redraw
-                localStorage.setItem(collapseKey, 'false');
-                redrawProviderUI(provider, data);
+
+            const deleteBtn = createButton("Delete Permanently", async () => {
+                const currentBin = loadRecycleBin(provider); // Uses provider
+                const entryToDeleteIndex = currentBin.findIndex(item => item.key === entry.key && item.removedAt === entry.removedAt);
+                if (entryToDeleteIndex === -1) {
+                    alert("Error: Could not find the key entry in the recycle bin storage. Cannot delete.");
+                    return;
+                }
+                 const keyToDelete = currentBin[entryToDeleteIndex].key;
+                if (confirm(`Are you sure you want to permanently delete the key "${keyToDelete}" from the recycle bin? This cannot be undone.`)) {
+                    currentBin.splice(entryToDeleteIndex, 1);
+                    saveRecycleBin(provider, currentBin); // Uses provider
+                    console.log(`KeySwitcher: Permanently deleted key '${keyToDelete}' from recycle bin.`);
+                     toastr.info(`Permanently deleted key '${keyToDelete.substring(0, 8)}...' from recycle bin.`);
+                    localStorage.setItem(collapseKey, 'false');
+                    const currentSecrets = await getSecrets() || {};
+                    const currentData = loadSetData(provider, currentSecrets); // Uses provider
+                    await redrawProviderUI(provider, currentData); // Uses provider
+                }
             });
             btnRow.appendChild(deleteBtn);
             row.appendChild(btnRow);
@@ -767,18 +810,16 @@ async function redrawProviderUI(provider, data) {
             binContent.appendChild(row);
         });
     }
-    // Insert at top
-    dynamicContainer.prepend(recycleBinSection);
+    dynamicContainer.appendChild(recycleBinSection); // Use appendChild
 
-    // --- Add Separator & Header for Sets Area ---
+
     const setsAreaHeader = document.createElement("h5");
-    setsAreaHeader.textContent = "Key Sets:";
+    setsAreaHeader.textContent = "Key Sets Management:";
     setsAreaHeader.style.marginTop = "15px";
     setsAreaHeader.style.marginBottom = "5px";
-    dynamicContainer.appendChild(document.createElement("hr")); // Separator above the sets
+    dynamicContainer.appendChild(document.createElement("hr"));
     dynamicContainer.appendChild(setsAreaHeader);
 
-    // --- Iterate and Draw Each Set ---
     if (!data.sets || data.sets.length === 0) {
         const noSetsMessage = document.createElement('p');
         noSetsMessage.textContent = "No key sets defined. Click 'Add New Set' to create one.";
@@ -793,120 +834,166 @@ async function redrawProviderUI(provider, data) {
             setContainer.style.padding = "10px";
             setContainer.style.marginBottom = "10px";
             if (index === data.activeSetIndex) {
-                setContainer.style.borderColor = "#8cff7a"; // Highlight active set
+                setContainer.style.borderColor = "#8cff7a";
                 setContainer.style.boxShadow = "0 0 5px #8cff7a";
             }
 
-            // Set Header (Name & Buttons)
             const setHeader = document.createElement("div");
             setHeader.style.display = "flex";
             setHeader.style.justifyContent = "space-between";
             setHeader.style.alignItems = "center";
             setHeader.style.marginBottom = "8px";
 
-            const setName = document.createElement("strong");
-            setName.textContent = `${set.name} ${index === data.activeSetIndex ? '(Active)' : ''}`;
-            // TODO: Add rename functionality here later by making setName editable
+            const setNameInput = document.createElement("input");
+            setNameInput.type = "text";
+            setNameInput.value = set.name;
+            setNameInput.style.fontWeight = "bold";
+            setNameInput.style.border = "1px solid transparent";
+            setNameInput.style.background = "transparent";
+            setNameInput.style.color = "inherit";
+            setNameInput.style.padding = "2px 4px";
+            setNameInput.style.marginRight = "10px";
+            setNameInput.style.flexGrow = "1";
+            setNameInput.style.cursor = "text";
+
+            if (index === data.activeSetIndex) {
+                 setNameInput.value += ' (Active)';
+                 setNameInput.style.fontStyle = "italic";
+                 setNameInput.title = `Set Name: ${set.name} (Currently Active)`;
+                 setNameInput.readOnly = true;
+            } else {
+                 setNameInput.title = `Set Name: ${set.name} (Double-click to rename)`;
+                 setNameInput.readOnly = false;
+                setNameInput.addEventListener('dblclick', () => {
+                    setNameInput.readOnly = false;
+                    setNameInput.style.border = "1px solid #888";
+                    setNameInput.select();
+                });
+                 const saveName = async () => {
+                     if (setNameInput.readOnly) return;
+                     const newName = setNameInput.value.trim();
+                     setNameInput.readOnly = true;
+                     setNameInput.style.border = "1px solid transparent";
+                     if (newName && newName !== set.name) {
+                         const isDuplicate = data.sets.some((s, i) => i !== index && s.name === newName);
+                         if (isDuplicate) {
+                             alert(`Set name "${newName}" already exists. Please choose a unique name.`);
+                             setNameInput.value = set.name;
+                         } else {
+                             console.log(`KeySwitcher: Renaming set ${index} from '${set.name}' to '${newName}' for ${provider.name}`); // Uses provider
+                             data.sets[index].name = newName;
+                             await saveSetData(provider, data); // Uses provider
+                             const updatedSecrets = await getSecrets() || {};
+                             const updatedData = loadSetData(provider, updatedSecrets); // Uses provider
+                             await redrawProviderUI(provider, updatedData); // Uses provider
+                             toastr.success(`Set renamed to "${newName}".`);
+                         }
+                     } else {
+                         setNameInput.value = set.name;
+                     }
+                 };
+                 setNameInput.addEventListener('blur', saveName);
+                 setNameInput.addEventListener('keydown', (e) => {
+                     if (e.key === 'Enter') {
+                         saveName();
+                         setNameInput.blur();
+                     } else if (e.key === 'Escape') {
+                         setNameInput.value = set.name;
+                         setNameInput.readOnly = true;
+                         setNameInput.style.border = "1px solid transparent";
+                         setNameInput.blur();
+                     }
+                 });
+            }
 
             const setButtons = document.createElement("div");
             setButtons.style.display = "flex";
             setButtons.style.gap = "5px";
+            setButtons.style.flexShrink = "0";
 
-            // Activate Button (only if not already active)
             if (index !== data.activeSetIndex) {
-                const activateButton = createButton("Activate Set", async () => {
-                    console.log(`KeySwitcher: Activating set ${index} ('${set.name}') for ${provider.name}`);
+                const activateButton = createButton("Activate", async () => {
+                    console.log(`KeySwitcher: Activating set ${index} ('${set.name}') for ${provider.name}`); // Uses provider
                     data.activeSetIndex = index;
-                    await saveSetData(provider, data); // Save the new active index
-                    await handleKeyRotation(provider.secret_key); // Trigger rotation to (potentially) set the first key of the new active set
-                    // We need to reload data and redraw everything
+                    await saveSetData(provider, data); // Uses provider
+                    await handleKeyRotation(provider.secret_key); // Uses provider implicitly
                     const updatedSecrets = await getSecrets();
                     if (updatedSecrets) {
-                        const updatedData = loadSetData(provider, updatedSecrets);
-                        await updateProviderInfoPanel(provider, updatedData); // Update static panel
-                        await redrawProviderUI(provider, updatedData);       // Redraw dynamic section
+                        const updatedData = loadSetData(provider, updatedSecrets); // Uses provider
+                        await updateProviderInfoPanel(provider, updatedData); // Uses provider
+                        await redrawProviderUI(provider, updatedData); // Uses provider
                     }
                 });
+                activateButton.title = `Make "${set.name}" the active key set`;
                 setButtons.appendChild(activateButton);
             }
 
-            // Delete Button (disable if only one set exists)
-            const deleteButton = createButton("Delete Set", async () => {
-                if (confirm(`Are you sure you want to delete the key set "${set.name}"? This cannot be undone.`)) {
-                    console.log(`KeySwitcher: Deleting set ${index} ('${set.name}') for ${provider.name}`);
-                    data.sets.splice(index, 1); // Remove the set from the array
-
-                    // Adjust activeSetIndex if needed
+            const deleteButton = createButton("Delete", async () => {
+                if (confirm(`Are you sure you want to delete the key set "${set.name}"? This cannot be undone. Keys in this set will be lost.`)) {
+                    console.log(`KeySwitcher: Deleting set ${index} ('${set.name}') for ${provider.name}`); // Uses provider
+                    const deletedSetName = data.sets[index].name;
+                    data.sets.splice(index, 1);
                     if (data.activeSetIndex === index) {
-                        // If deleting the active set, default to the first set (index 0)
                         data.activeSetIndex = 0;
-                        console.log("KeySwitcher: Deleted active set, setting set 0 as new active.");
                     } else if (data.activeSetIndex > index) {
-                        // If deleting a set before the active one, shift the active index down
                         data.activeSetIndex--;
-                         console.log("KeySwitcher: Deleted set before active set, adjusting active index.");
                     }
-
-                    // Ensure at least one set remains (create default if necessary)
-                    if (data.sets.length === 0) {
-                         console.log("KeySwitcher: Last set deleted, creating a new default set.");
+                     if (data.sets.length === 0) {
                         data.sets.push({ name: "Default", keys: "" });
                         data.activeSetIndex = 0;
                     }
-
-                    await saveSetData(provider, data); // Save changes
-
-                    // Reload and redraw UI completely
+                    await saveSetData(provider, data); // Uses provider
                     const updatedSecrets = await getSecrets();
                     if (updatedSecrets) {
-                        const updatedData = loadSetData(provider, updatedSecrets);
-                        // Trigger rotation for the (potentially new) active set
-                        await handleKeyRotation(provider.secret_key);
-                        await updateProviderInfoPanel(provider, updatedData);
-                        await redrawProviderUI(provider, updatedData);
+                        const updatedData = loadSetData(provider, updatedSecrets); // Uses provider
+                        await handleKeyRotation(provider.secret_key); // Uses provider implicitly
+                        await updateProviderInfoPanel(provider, updatedData); // Uses provider
+                        await redrawProviderUI(provider, updatedData); // Uses provider
+                        toastr.info(`Key set "${deletedSetName}" deleted.`);
                     }
-                }
+                 }
             });
+             deleteButton.title = `Delete key set "${set.name}"`;
             if (data.sets.length <= 1) {
-                deleteButton.disabled = true; // Cannot delete the last set
-                deleteButton.title = "Cannot delete the only set.";
+                deleteButton.disabled = true;
+                deleteButton.title = "Cannot delete the only key set.";
                 deleteButton.style.opacity = "0.5";
                 deleteButton.style.cursor = "not-allowed";
             }
             setButtons.appendChild(deleteButton);
 
-            // TODO: Add Rename button later
-
-
-            setHeader.appendChild(setName);
+            setHeader.appendChild(setNameInput);
             setHeader.appendChild(setButtons);
             setContainer.appendChild(setHeader);
 
-            // Keys Textarea
             const keysTextarea = document.createElement("textarea");
-            keysTextarea.classList.add("text_pole", "api_key_textarea"); // Use similar styling
-            keysTextarea.rows = 4; // Adjust as needed
+            keysTextarea.classList.add("text_pole", "api_key_textarea");
+            keysTextarea.rows = 4;
             keysTextarea.placeholder = `Enter API keys for set "${set.name}", one per line or separated by semicolons.`;
             keysTextarea.value = set.keys || "";
-            keysTextarea.style.width = "100%"; // Ensure it fills container
-            keysTextarea.style.boxSizing = 'border-box'; // Include padding/border in width
+            keysTextarea.style.width = "100%";
+            keysTextarea.style.boxSizing = 'border-box';
+            keysTextarea.style.marginTop = "5px";
 
-            // Save keys on blur (when textarea loses focus)
             keysTextarea.addEventListener('blur', async (event) => {
-                const newKeys = event.target.value.trim();
-                if (set.keys !== newKeys) {
-                    console.log(`KeySwitcher: Updating keys for set ${index} ('${set.name}') for ${provider.name}`);
-                    set.keys = newKeys; // Update in the local data object first
-                    data.sets[index].keys = newKeys; // Ensure parent data obj is updated too
-                    await saveSetData(provider, data); // Save the whole data structure
-
-                    // If these were keys for the *active* set, trigger rotation logic
-                    // in case the currently active key was removed or changed.
+                const newKeysValue = event.target.value;
+                const newKeysArray = splitKeys(newKeysValue);
+                const normalizedNewKeysString = newKeysArray.join('\n');
+                const currentKeysArray = splitKeys(set.keys);
+                const normalizedCurrentKeysString = currentKeysArray.join('\n');
+                if (normalizedCurrentKeysString !== normalizedNewKeysString) {
+                    console.log(`KeySwitcher: Updating keys for set ${index} ('${set.name}') for ${provider.name}`); // Uses provider
+                    data.sets[index].keys = normalizedNewKeysString;
+                    await saveSetData(provider, data); // Uses provider
                     if (index === data.activeSetIndex) {
                          console.log("KeySwitcher: Keys updated for the active set. Triggering rotation check.");
-                        await handleKeyRotation(provider.secret_key); // This will update the info panel too
+                        await handleKeyRotation(provider.secret_key); // Uses provider implicitly
                     }
-                }
+                    event.target.value = normalizedNewKeysString;
+                    toastr.success(`Keys updated for set "${set.name}".`);
+                 } else {
+                    event.target.value = normalizedNewKeysString;
+                 }
             });
 
             setContainer.appendChild(keysTextarea);
@@ -914,43 +1001,36 @@ async function redrawProviderUI(provider, data) {
         });
     }
 
-    // --- Add "New Set" Button ---
     const addNewSetButton = createButton("Add New Set", async () => {
-        const newSetName = prompt("Enter a name for the new key set:", `Set ${data.sets.length + 1}`);
-        if (newSetName && newSetName.trim()) {
-            console.log(`KeySwitcher: Adding new set named '${newSetName}' for ${provider.name}`);
-            data.sets.push({ name: newSetName.trim(), keys: "" });
-            await saveSetData(provider, data); // Save the new set
-            // Reload and redraw UI
-            const updatedSecrets = await getSecrets();
-             if (updatedSecrets) {
-                 const updatedData = loadSetData(provider, updatedSecrets);
-                 await updateProviderInfoPanel(provider, updatedData); // Update just in case (though unlikely to change)
-                 await redrawProviderUI(provider, updatedData);       // Redraw dynamic section
+        let newSetName = prompt("Enter a name for the new key set:", `Set ${data.sets.length + 1}`);
+        if (newSetName !== null) {
+             newSetName = newSetName.trim();
+             if (newSetName) {
+                 const isDuplicate = data.sets.some(s => s.name === newSetName);
+                 if (isDuplicate) {
+                     alert(`Set name "${newSetName}" already exists. Please choose a unique name.`);
+                     return;
+                 }
+                 console.log(`KeySwitcher: Adding new set named '${newSetName}' for ${provider.name}`); // Uses provider
+                 data.sets.push({ name: newSetName, keys: "" });
+                 await saveSetData(provider, data); // Uses provider
+                 const updatedSecrets = await getSecrets();
+                  if (updatedSecrets) {
+                      const updatedData = loadSetData(provider, updatedSecrets); // Uses provider
+                       toastr.success(`New key set "${newSetName}" added.`);
+                      await redrawProviderUI(provider, updatedData); // Uses provider
+                  }
+             } else {
+                 alert("Set name cannot be empty.");
              }
-        } else if (newSetName !== null) { // Check if prompt was cancelled vs empty input
-            alert("Set name cannot be empty.");
         }
     });
     addNewSetButton.style.marginTop = "10px";
     dynamicContainer.appendChild(addNewSetButton);
-}
 
-// --- START: Error Code Actions UI (Minimal Placeholder) --- [ADDED IN THIS STEP]
-const errorActionsSection = document.createElement("div");
-errorActionsSection.id = `keyswitcher-error-actions-${provider.secret_key}`; // Unique ID
-errorActionsSection.style.marginTop = "20px"; // Add space above
-errorActionsSection.style.border = "1px dashed #888"; // Use dashed border for placeholder
-errorActionsSection.style.borderRadius = "4px";
-errorActionsSection.style.padding = "10px";
-errorActionsSection.style.color = "#aaa"; // Dim text color
+    // NOTE: Placeholder for Error Code Actions UI has been removed for this diagnostic step.
 
-// Simple placeholder text
-errorActionsSection.textContent = "[Error Code Actions UI will be added here]";
-
-// Append this minimal placeholder to the main dynamic container
-dynamicContainer.appendChild(errorActionsSection);
-// --- END: Error Code Actions UI (Minimal Placeholder) ---
+} // --- End of redrawProviderUI function ---
 
 // --- Main Initialization Logic ---
 jQuery(async () => {
