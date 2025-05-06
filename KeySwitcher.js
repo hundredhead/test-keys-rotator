@@ -936,6 +936,21 @@ async function redrawProviderUI(provider, data) {
     dynamicContainer.appendChild(addNewSetButton);
 }
 
+// --- START: Error Code Actions UI (Minimal Placeholder) --- [ADDED IN THIS STEP]
+const errorActionsSection = document.createElement("div");
+errorActionsSection.id = `keyswitcher-error-actions-${provider.secret_key}`; // Unique ID
+errorActionsSection.style.marginTop = "20px"; // Add space above
+errorActionsSection.style.border = "1px dashed #888"; // Use dashed border for placeholder
+errorActionsSection.style.borderRadius = "4px";
+errorActionsSection.style.padding = "10px";
+errorActionsSection.style.color = "#aaa"; // Dim text color
+
+// Simple placeholder text
+errorActionsSection.textContent = "[Error Code Actions UI will be added here]";
+
+// Append this minimal placeholder to the main dynamic container
+dynamicContainer.appendChild(errorActionsSection);
+// --- END: Error Code Actions UI (Minimal Placeholder) ---
 
 // --- Main Initialization Logic ---
 jQuery(async () => {
