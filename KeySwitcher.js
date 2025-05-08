@@ -196,12 +196,12 @@ function loadErrorCodePrefs(provider) {
         }
     }
 
-    // Ensure all known error codes for this provider have a default ('none') if not already set
+    // Ensure all known error codes for this provider have a default ('rotate') if not already set
     const providerCodes = PROVIDER_ERROR_MAPPINGS[provider.secret_key]?.codes || {};
     for (const code in providerCodes) {
         if (!(code in prefs) || !['rotate', 'remove', 'none'].includes(prefs[code])) {
-             // If the code is missing or has an invalid value, set default to 'none'
-            prefs[code] = 'none';
+             // If the code is missing or has an invalid value, set default to 'rotate'
+            prefs[code] = 'rotate'; // MODIFIED: Default to 'rotate'
         }
     }
     // console.log(`KeySwitcher: Loaded error prefs for ${provider.name}:`, prefs); // Optional: for debugging
@@ -294,11 +294,17 @@ async function init(loadedSecrets) {
 }
 
 // Create a button element - CORRECTED (removed async)
-function createButton(title, onClick) {
+function createButton(title, onClick, icon = null) {
     const button = document.createElement("div");
     button.classList.add("menu_button", "menu_button_icon", "interactable");
     button.title = title;
     button.onclick = onClick; // The handler CAN be async
+
+    if (icon) {
+        const iconSpan = document.createElement("span");
+        iconSpan.classList.add("fa-fw", icon); // Assumes Font Awesome icons
+        button.appendChild(iconSpan);
+    }
 
     const span = document.createElement("span");
     span.textContent = title;
@@ -674,9 +680,9 @@ async function redrawProviderUI(provider, data) {
     recycleBinSection.id = oldBinId;
     recycleBinSection.style.marginBottom = "18px";
     recycleBinSection.style.padding = "8px";
-    recycleBinSection.style.border = "1px dashed #b44";
+    recycleBinSection.style.border = "1px dashed #b44"; // Darker red for bin
     recycleBinSection.style.borderRadius = "4px";
-    recycleBinSection.style.background = "#2a1818";
+    recycleBinSection.style.background = "#2a1818"; // Darker red bg
 
     const recycleHeader = document.createElement("div");
     recycleHeader.style.display = "flex";
@@ -684,23 +690,151 @@ async function redrawProviderUI(provider, data) {
     recycleHeader.style.alignItems = "center";
     recycleHeader.style.cursor = "pointer";
     recycleHeader.style.fontWeight = "bold";
-    recycleHeader.textContent = "🗑️ Recycle Bin (Removed Keys)";
-    recycleHeader.title = "Click to collapse/expand";
+    recycleHeader.style.padding = "5px"; // Added padding
+    recycleHeader.style.background = "#c0392b"; // Red clickable header
+    recycleHeader.style.color = "white";
+    recycleHeader.style.borderRadius = "3px 3px 0 0"; // Rounded top corners
+
+
+    const recycleTitle = document.createElement("span");
+    recycleTitle.textContent = "🗑️ Recycle Bin (Removed Keys)";
+    recycleTitle.title = "Click to collapse/expand";
+    recycleHeader.appendChild(recycleTitle);
+
+    // Container for "Delete All" and "Restore All" buttons
+    const recycleGlobalActions = document.createElement("div");
+    recycleGlobalActions.id = `recycle-global-actions-${provider.secret_key}`;
+    recycleGlobalActions.style.display = "none"; // Initially hidden
+    recycleGlobalActions.style.marginLeft = "auto"; // Push to the right
+    recycleGlobalActions.style.gap = "5px";
+
+
+    recycleHeader.appendChild(recycleGlobalActions);
     recycleBinSection.appendChild(recycleHeader);
 
+
     const collapseKey = `keyswitcher-recycle-collapsed-${provider.secret_key}`;
-    let recycleCollapsed = localStorage.getItem(collapseKey) !== 'false';
+    let recycleCollapsed = localStorage.getItem(collapseKey) !== 'false'; // Default to collapsed
     const binContent = document.createElement("div");
     binContent.style.display = recycleCollapsed ? "none" : "block";
-    recycleHeader.onclick = () => {
+    binContent.style.borderTop = "1px solid #b44"; // Separator
+    binContent.style.paddingTop = "8px";
+
+
+    // Toggle visibility of global actions based on bin state
+    const toggleGlobalActionsVisibility = () => {
+        const bin = loadRecycleBin(provider);
+        if (!recycleCollapsed && bin.length > 0) {
+            recycleGlobalActions.style.display = "flex"; // Show if expanded and not empty
+        } else {
+            recycleGlobalActions.style.display = "none"; // Hide otherwise
+        }
+    };
+
+
+    recycleHeader.onclick = (event) => {
+        // Prevent click on buttons inside header from toggling collapse
+        if (event.target.closest(`#recycle-global-actions-${provider.secret_key}`)) {
+            return;
+        }
         recycleCollapsed = !recycleCollapsed;
         localStorage.setItem(collapseKey, recycleCollapsed ? 'true' : 'false');
         binContent.style.display = recycleCollapsed ? "none" : "block";
+        recycleTitle.textContent = `${recycleCollapsed ? '▶️' : '🗑️'} Recycle Bin (Removed Keys)`; // Update icon
+        toggleGlobalActionsVisibility(); // Update button visibility
     };
+    // Initial icon set
+    recycleTitle.textContent = `${recycleCollapsed ? '▶️' : '🗑️'} Recycle Bin (Removed Keys)`;
+
 
     recycleBinSection.appendChild(binContent);
 
+
     const recycleBin = loadRecycleBin(provider);
+
+    // --- "Delete All" Button ---
+    const deleteAllButton = createButton("Delete All", async () => {
+        const currentBin = loadRecycleBin(provider);
+        if (currentBin.length === 0) {
+            toastr.info("Recycle bin is already empty.");
+            return;
+        }
+        if (confirm(`Are you sure you want to permanently delete ALL ${currentBin.length} keys from the recycle bin? This cannot be undone.`)) {
+            saveRecycleBin(provider, []); // Empty the bin
+            console.log(`KeySwitcher: Permanently deleted all keys from recycle bin for ${provider.name}.`);
+            toastr.success(`All ${currentBin.length} keys permanently deleted from recycle bin.`);
+            localStorage.setItem(collapseKey, 'false'); // Keep bin open
+            const currentSecrets = await getSecrets() || {};
+            const currentData = loadSetData(provider, currentSecrets);
+            await redrawProviderUI(provider, currentData);
+        }
+    }, "fa-trash-alt"); // Font Awesome icon for delete all
+    deleteAllButton.style.background = "#e74c3c"; // Reddish color
+    deleteAllButton.style.color = "white";
+    recycleGlobalActions.appendChild(deleteAllButton);
+
+    // --- "Restore All" Button ---
+    const restoreAllButton = createButton("Restore All", async () => {
+        const currentBin = loadRecycleBin(provider);
+        if (currentBin.length === 0) {
+            toastr.info("Recycle bin is already empty.");
+            return;
+        }
+        if (confirm(`Are you sure you want to restore ALL ${currentBin.length} keys from the recycle bin? They will be added to their original sets (or the active set if the original is missing).`)) {
+            const loadedSecrets = await getSecrets();
+            const currentData = loadSetData(provider, loadedSecrets);
+            let restoredCount = 0;
+            let notFoundCount = 0;
+
+            for (const entryToRestore of [...currentBin]) { // Iterate over a copy
+                let targetSetIndex = currentData.sets.findIndex(s => s.name === entryToRestore.set);
+                let targetSetName = entryToRestore.set;
+
+                if (targetSetIndex === -1) {
+                    targetSetIndex = currentData.activeSetIndex;
+                    if (targetSetIndex < 0 || targetSetIndex >= currentData.sets.length) {
+                        console.warn(`KeySwitcher: Restore All - Original set '${entryToRestore.set}' not found and no valid active set. Skipping key '${entryToRestore.key}'.`);
+                        notFoundCount++;
+                        continue;
+                    }
+                    targetSetName = currentData.sets[targetSetIndex].name;
+                    console.warn(`KeySwitcher: Restore All - Original set '${entryToRestore.set}' not found. Restoring key '${entryToRestore.key}' to active set '${targetSetName}'.`);
+                }
+
+                const targetSetKeys = splitKeys(currentData.sets[targetSetIndex].keys);
+                if (!targetSetKeys.includes(entryToRestore.key)) {
+                    targetSetKeys.push(entryToRestore.key);
+                    currentData.sets[targetSetIndex].keys = targetSetKeys.join('\n');
+                    restoredCount++;
+                }
+            }
+
+            if (restoredCount > 0) {
+                await saveSetData(provider, currentData);
+                console.log(`KeySwitcher: Restored ${restoredCount} keys. Original set not found for ${notFoundCount} keys.`);
+                toastr.success(`${restoredCount} keys restored. ${notFoundCount > 0 ? `${notFoundCount} keys could not be restored to their original set.` : ''}`);
+            } else if (notFoundCount > 0 && restoredCount === 0) {
+                toastr.warning(`Could not restore any keys. Original sets not found for ${notFoundCount} keys.`);
+            } else {
+                 toastr.info("No keys needed to be restored (they might already exist in their target sets).");
+            }
+
+            saveRecycleBin(provider, []); // Empty the bin after attempting restoration
+            localStorage.setItem(collapseKey, 'false'); // Keep bin open
+            const finalSecrets = await getSecrets() || {};
+            const finalData = loadSetData(provider, finalSecrets);
+            await updateProviderInfoPanel(provider, finalData);
+            await redrawProviderUI(provider, finalData);
+        }
+    }, "fa-undo-alt"); // Font Awesome icon for restore all
+    restoreAllButton.style.background = "#2ecc71"; // Greenish color
+    restoreAllButton.style.color = "white";
+    recycleGlobalActions.appendChild(restoreAllButton);
+
+    // Call after bin content might change
+    toggleGlobalActionsVisibility();
+
+
     if (recycleBin.length === 0) {
         const empty = document.createElement("div");
         empty.textContent = "Recycle bin is empty.";
@@ -774,11 +908,11 @@ async function redrawProviderUI(provider, data) {
                 const finalData = loadSetData(provider, finalSecrets);
                 await updateProviderInfoPanel(provider, finalData);
                 await redrawProviderUI(provider, finalData); // Redraw everything
-            });
+            }, "fa-undo"); // Font Awesome icon
             btnRow.appendChild(restoreBtn);
 
              // Delete Button Logic (finds correct entry)
-            const deleteBtn = createButton("Delete Permanently", async () => {
+            const deleteBtn = createButton("Delete", async () => {
                 const currentBin = loadRecycleBin(provider);
                 const entryToDeleteIndex = currentBin.findIndex(item => item.key === entry.key && item.removedAt === entry.removedAt);
                 if (entryToDeleteIndex === -1) { alert("Error: Could not find the key entry in the recycle bin storage. Cannot delete."); return; }
@@ -793,7 +927,7 @@ async function redrawProviderUI(provider, data) {
                     const currentData = loadSetData(provider, currentSecrets);
                     await redrawProviderUI(provider, currentData); // Redraw just the bin visually
                 }
-            });
+            }, "fa-trash"); // Font Awesome icon
             btnRow.appendChild(deleteBtn);
             row.appendChild(btnRow);
 
@@ -908,7 +1042,7 @@ async function redrawProviderUI(provider, data) {
                         await updateProviderInfoPanel(provider, updatedData);
                         await redrawProviderUI(provider, updatedData);
                     }
-                });
+                }, "fa-check-circle"); // Font Awesome icon
                 activateButton.title = `Make "${set.name}" the active key set`;
                 setButtons.appendChild(activateButton);
             }
@@ -931,7 +1065,7 @@ async function redrawProviderUI(provider, data) {
                         toastr.info(`Key set "${deletedSetName}" deleted.`);
                     }
                  }
-            });
+            }, "fa-times-circle"); // Font Awesome icon
              deleteButton.title = `Delete key set "${set.name}"`;
             if (data.sets.length <= 1) {
                 deleteButton.disabled = true;
@@ -1002,11 +1136,166 @@ async function redrawProviderUI(provider, data) {
                  alert("Set name cannot be empty.");
              }
         }
-    });
+    }, "fa-plus-circle"); // Font Awesome icon
     addNewSetButton.style.marginTop = "10px";
     dynamicContainer.appendChild(addNewSetButton);
+    toggleGlobalActionsVisibility(); // Final check for global recycle bin buttons
 
 } // --- End of redrawProviderUI function ---
+
+/**
+ * Processes an error for a specific provider: detects status code,
+ * determines action based on prefs, performs action (remove/rotate/none),
+ * and handles popups/logging.
+ *
+ * @param {object} provider The provider object being processed.
+ * @param {string} errorMessage The main error message string.
+ * @param {string} errorTitle The title of the error toast/popup.
+ */
+// Keep track of recently removed keys to prevent double removal
+const recentlyRemovedKeys = {};
+const REMOVAL_COOLDOWN_MS = 5000; // 5 seconds
+
+async function processProviderError(provider, errorMessage, errorTitle) {
+    console.log(`KeySwitcher: Processing error for provider: ${provider.name}`);
+    let keyRemoved = false;
+    let removedKeyValue = null;
+    const failedKey = await secretsFunctions.findSecret(provider.secret_key);
+
+    // Check if key was already removed recently
+    const keyId = `${provider.secret_key}:${failedKey}`;
+    const now = Date.now();
+    const lastRemovalTime = recentlyRemovedKeys[keyId] || 0;
+
+    if (now - lastRemovalTime < REMOVAL_COOLDOWN_MS) {
+        console.log(`KeySwitcher: Skipping duplicate removal for ${provider.name}. Key was already removed within the last 5 seconds.`);
+        return;
+    }
+
+    // Check if switching is enabled AND a key was actually found
+    if (failedKey && keySwitchingEnabled[provider.secret_key]) {
+
+    // --- START: Multi-Stage Error Detection Logic ---
+    let statusCode = null;
+    let detectedReason = "Unknown error"; // Default reason
+
+    // 1. Try parsing status code from errorMessage OR errorTitle
+    const messageMatch = errorMessage?.match(/\b(\d{3})\b/);
+    const titleMatch = errorTitle?.match(/\b(\d{3})\b/);
+
+    if (messageMatch) {
+        statusCode = parseInt(messageMatch[1], 10);
+        detectedReason = `Status code ${statusCode} in message`;
+        console.log(`KeySwitcher: Found status code ${statusCode} in error message for ${provider.name}.`);
+    } else if (titleMatch) {
+        statusCode = parseInt(titleMatch[1], 10);
+        detectedReason = `Status code ${statusCode} in title`;
+        console.log(`KeySwitcher: Found status code ${statusCode} in error title for ${provider.name}.`);
+    }
+
+    // 2. If still no numeric code, check for common text patterns
+    if (statusCode === null) {
+         console.log(`KeySwitcher: No numeric status code found for ${provider.name}. Checking text patterns...`);
+         const combinedErrorText = `${errorMessage || ''} ${errorTitle || ''}`; // Combine safely
+
+         // Add more specific checks based on provider if possible
+         if (provider.secret_key === SECRET_KEYS.MAKERSUITE) { // Gemini specific checks first
+             if (/quota|rate limit/i.test(combinedErrorText)) { statusCode = 429; detectedReason = `Gemini text match for Quota/Rate Limit mapped to 429`; }
+             else if (/API key not valid|PERMISSION_DENIED/i.test(combinedErrorText)) { statusCode = 403; detectedReason = `Gemini text match for API Key/Permission mapped to 403`; }
+             // Add more Gemini specific text -> code mappings?
+         }
+         // Claude specific checks
+         else if (provider.secret_key === SECRET_KEYS.CLAUDE) {
+             // For Claude, Internal Server Error with 500 is often due to authentication issues
+             if (/Internal Server Error/i.test(combinedErrorText)) {
+                 statusCode = 401; // Treat as authentication error
+                 detectedReason = `Claude specific: Internal Server Error mapped to 401`;
+             }
+         }
+         // General checks (if not already matched by specific provider)
+         else if (/(Unauthorized|Invalid[\s_\-]?API[\s_\-]?Key|Authentication[\s_\-]?Error|Invalid[\s_\-]?Authentication|invalid[\s_\-]?x[\s_\-]?api[\s_\-]?key|authentication[\s_\-]?error|Check.*connection.*API key|Check.*API key.*connection)/i.test(combinedErrorText)) { statusCode = 401; detectedReason = `Text match for Auth Error mapped to 401`; }
+         else if (/Rate Limit Exceeded|Too Many Requests|Rate limit reached/i.test(combinedErrorText)) { statusCode = 429; detectedReason = `Text match for Rate Limit mapped to 429`; }
+         else if (/Payment Required|Billing issue|budget|credit|insufficient quota/i.test(combinedErrorText)) { statusCode = 402; detectedReason = `Text match for Payment/Billing mapped to 402`; } // Added insufficient quota
+         else if (/Forbidden|Permission Denied|Permission Error/i.test(combinedErrorText)) { statusCode = 403; detectedReason = `Text match for Forbidden/Permission mapped to 403`; }
+         // Add more general mappings?
+
+         if (statusCode !== null) {
+             console.log(`KeySwitcher: Mapped error text to status code ${statusCode} for ${provider.name}.`);
+         } else {
+             // Try parsing JSON error for authentication errors
+             let foundAuthError = false;
+             try {
+                 const jsonMatch = errorMessage?.match(/({.*})/);
+                 if (jsonMatch?.[1]) {
+                     const parsed = JSON.parse(jsonMatch[1]);
+                     const msg = parsed?.error?.message || '';
+                     const typ = parsed?.error?.type || '';
+                     if (/invalid x-api-key|authentication_error|unauthorized/i.test(msg) || /invalid x-api-key|authentication_error|unauthorized/i.test(typ)) {
+                         statusCode = 401;
+                         detectedReason = `JSON error match for Auth Error mapped to 401`;
+                         foundAuthError = true;
+                         console.log(`KeySwitcher: Found authentication error in JSON for ${provider.name}. Treating as 401.`);
+                     }
+                 }
+             } catch (jsonErr) {
+                 // Ignore JSON parse errors
+             }
+             if (!foundAuthError) {
+                 console.log(`KeySwitcher: No numeric code or recognizable error text pattern found for ${provider.name}.`);
+                 detectedReason = (errorMessage || 'Unknown Error').split('\n')[0].slice(0, 100); // Fallback reason
+             }
+         }
+    }
+
+    // --- Now, proceed with action based on the determined statusCode (if valid) ---
+    if (statusCode !== null) {
+        const action = getErrorCodeAction(provider, statusCode);
+        console.log(`KeySwitcher: Determined status code ${statusCode} for ${provider.name}. Configured action: '${action}'`);
+
+        if (action === 'remove') {
+            console.log(`KeySwitcher: Attempting key removal for ${provider.name} based on action '${action}' for status code ${statusCode}.`);
+            let removalReason = detectedReason;
+            try {
+                const jsonMatch = errorMessage?.match(/({.*})/);
+                if (jsonMatch?.[1]) { const parsed = JSON.parse(jsonMatch[1]); if (parsed?.error?.message) { removalReason += `: ${parsed.error.message.slice(0, 100)}`; } }
+                else if (!detectedReason.includes(errorMessage?.split('\n')[0])) { removalReason += `: ${(errorMessage || '').split('\n')[0].slice(0,100)}`; }
+            } catch {}
+
+            const newKey = await handleKeyRemoval(provider, failedKey, removalReason.slice(0, 150));
+            if (newKey !== null) {
+                keyRemoved = true;
+                removedKeyValue = failedKey;
+                // Record the removal timestamp to prevent duplicates
+                recentlyRemovedKeys[`${provider.secret_key}:${failedKey}`] = Date.now();
+                console.log(`KeySwitcher: Key removal successful for ${provider.name} (${statusCode}). New key: '${newKey || "None"}'.`);
+                toastr.warning(`KeySwitcher removed failing key for ${provider.name} (ending ${failedKey.slice(-4)}) due to error ${statusCode}. ${newKey ? 'Activated next key.' : 'No more keys in set!'}`);
+            } else {
+                console.log(`KeySwitcher: handleKeyRemoval returned null/failed for ${provider.name} (${statusCode}).`);
+                toastr.error(`KeySwitcher: Configured action 'remove' for error ${statusCode} failed for ${provider.name}. Key not removed.`);
+            }
+        } else if (action === 'rotate') {
+            console.log(`KeySwitcher: Attempting key rotation for ${provider.name} based on action '${action}' for status code ${statusCode}.`);
+            await handleKeyRotation(provider.secret_key);
+             toastr.info(`KeySwitcher: Rotated key for ${provider.name} due to error ${statusCode} based on settings.`);
+        } else { // Action is 'none'
+            console.log(`KeySwitcher: Configured action is 'none' for ${provider.name} (${statusCode}). No automatic key action taken.`);
+        }
+    } else { // Could not determine a status code
+        console.log(`KeySwitcher: Could not determine a relevant status code for ${provider.name} from the error. No key action taken.`);
+    }
+    // --- END: Multi-Stage Logic ---
+
+} else if (failedKey) {
+    console.log(`KeySwitcher: Error for ${provider.name} occurred, but Key Switching is OFF.`);
+} else {
+    console.log(`KeySwitcher: Error for ${provider.name} occurred, but no failed key found in secret.`);
+}
+
+// Show detailed error popup if enabled (independent of key actions)
+if (showErrorDetails[provider.secret_key]) {
+     showErrorPopup(provider, errorMessage, errorTitle || `${provider.name} API Error`, keyRemoved, removedKeyValue);
+}
+} // --- End of processProviderError function ---
 
 // --- Main Initialization Logic ---
 jQuery(async () => {
@@ -1014,236 +1303,158 @@ jQuery(async () => {
 
     // Override toastr.error to intercept API errors and handle key switching/removal
     const originalToastrError = toastr.error;
+    // Global lock to prevent parallel error processing
+    let errorProcessingLock = false;
+    let lastProcessedErrorTime = 0;
+    const ERROR_PROCESSING_COOLDOWN = 2000; // 2 seconds cooldown
+
     toastr.error = async function(...args) {
-        originalToastrError(...args);
+        originalToastrError(...args); // Show original toast first
         console.log("KeySwitcher: Toastr Error Args:", args);
-        const [errorMessage, errorTitle] = args;
-        for (const provider of Object.values(PROVIDERS)) {
+
+        // Check if we're currently processing an error or if one was processed recently
+        const now = Date.now();
+        if (errorProcessingLock) {
+            console.log("KeySwitcher: Error processing already in progress. Skipping.");
+            return;
+        }
+
+        if (now - lastProcessedErrorTime < ERROR_PROCESSING_COOLDOWN) {
+            console.log(`KeySwitcher: Error was processed within the last ${ERROR_PROCESSING_COOLDOWN/1000} seconds. Skipping.`);
+            return;
+        }
+
+        // Set the lock
+        errorProcessingLock = true;
+        lastProcessedErrorTime = now;
+
+        try {
+            const [errorMessage, errorTitle] = args; // Capture both arguments
+            let providerHandled = false; // Flag to ensure only one provider handles the error
+
+            // --- Pass 1: Check based on current settings ---
+            console.log("KeySwitcher: Starting Pass 1 (Check active setting)...");
+            for (const provider of Object.values(PROVIDERS)) {
             if (isProviderSource(provider)) {
-                console.log(`KeySwitcher: Error occurred while ${provider.name} was active.`);
-                let keyRemoved = false;
-                let removedKeyValue = null;
-                const failedKey = await secretsFunctions.findSecret(provider.secret_key);
-                if (failedKey && keySwitchingEnabled[provider.secret_key]) {
-                    const statusCodeMatch = errorMessage.match(/\b(\d{3})\b/);
-                    let statusCode = null;
-                    if (statusCodeMatch) statusCode = parseInt(statusCodeMatch[1], 10);
-                    // -- Use OLD logic for now --
-                    const isRemovalStatusCode = statusCode && REMOVAL_STATUS_CODES.includes(statusCode);
-                    const isRemovalMessage = REMOVAL_MESSAGE_REGEX.test(errorMessage);
-                    if (isRemovalStatusCode || isRemovalMessage) {
-                        console.log(`KeySwitcher: Removal trigger matched for ${provider.name} (Status: ${statusCode}, MessageMatch: ${isRemovalMessage}). Attempting removal...`);
-                        let removalReason = "Unknown";
-                        try {
-                            const jsonMatch = errorMessage.match(/({.*})/);
-                            if (jsonMatch && jsonMatch[1]) { const parsed = JSON.parse(jsonMatch[1]); if (parsed?.error?.message) { removalReason = `${statusCode ? statusCode + ': ' : ''}${parsed.error.message}`; } else { removalReason = `${statusCode ? statusCode + ': ' : ''}` + errorMessage.split('\n')[0].slice(0, 120); } } else { removalReason = `${statusCode ? statusCode + ': ' : ''}` + errorMessage.split('\n')[0].slice(0, 120); }
-                        } catch { removalReason = `${statusCode ? statusCode + ': ' : ''}` + errorMessage.split('\n')[0].slice(0, 120); }
-                        const newKey = await handleKeyRemoval(provider, failedKey, removalReason);
-                        if (newKey !== null) { keyRemoved = true; removedKeyValue = failedKey; console.log(`KeySwitcher: Key ${failedKey} supposedly removed, new key is '${newKey || "None"}'`); }
-                        else { console.log(`KeySwitcher: handleKeyRemoval returned null (or failed), key ${failedKey} not removed.`); }
-                    } else {
-                        console.log(`KeySwitcher: Error for ${provider.name} (Switching ON) did not match removal triggers. Rotating...`);
-                        await handleKeyRotation(provider.secret_key);
-                    }
-                } else if (failedKey) { console.log(`KeySwitcher: Error for ${provider.name} occurred, but Key Switching is OFF.`); }
-                else { console.log(`KeySwitcher: Error for ${provider.name} occurred, but no failed key found in secret.`); }
-                if (showErrorDetails[provider.secret_key]) { showErrorPopup(provider, errorMessage, errorTitle || `${provider.name} API Error`, keyRemoved, removedKeyValue); }
-                 break;
+                console.log(`KeySwitcher: Processing error based on active setting: ${provider.name}`);
+                await processProviderError(provider, errorMessage, errorTitle); // Use helper function
+                providerHandled = true;
+                break; // Handle only once
             }
+        }
+        console.log("KeySwitcher: Finished Pass 1.");
+
+        // --- Pass 2 (Fallback): If not handled, try deducing from error content ---
+        if (!providerHandled) {
+            console.log("KeySwitcher: Starting Pass 2 (Error not matched to active setting, attempting deduction)...");
+            let deducedProvider = null;
+            // Combine error messages safely for robust checking
+            const combinedErrorText = `${errorMessage || ''} ${errorTitle || ''}`;
+
+            // Prioritize specific keywords first
+            if (/\bai\.google\.dev\b|gemini-api|exceeded your current quota|API key not valid/i.test(combinedErrorText)) { // Added "API key not valid" specifically for Gemini 400
+                if (PROVIDERS.GEMINI) { // Check if Gemini provider exists
+                    deducedProvider = PROVIDERS.GEMINI;
+                    console.log(`KeySwitcher: Deduced GEMINI from keywords.`);
+                }
+            } else if (/claude|anthropic\.com/i.test(combinedErrorText)) {
+                if (PROVIDERS.ANTHROPIC) {
+                    deducedProvider = PROVIDERS.ANTHROPIC;
+                    console.log(`KeySwitcher: Deduced ANTHROPIC from keywords.`);
+                }
+            } else if (/deepseek\.com/i.test(combinedErrorText)) {
+                if (PROVIDERS.DEEPSEEK) {
+                    deducedProvider = PROVIDERS.DEEPSEEK;
+                    console.log(`KeySwitcher: Deduced DEEPSEEK from keywords.`);
+                }
+            } else if (/\bx\.ai\b|grok/i.test(combinedErrorText)) { // Used word boundary for x.ai
+               if (PROVIDERS.XAI) {
+                   deducedProvider = PROVIDERS.XAI;
+                   console.log(`KeySwitcher: Deduced XAI from keywords.`);
+               }
+            }
+            // OpenAI / OpenRouter check (can be ambiguous)
+            else if (/Unauthorized|Invalid API Key|\bopenai\.com\b|permission/i.test(combinedErrorText)) {
+                // If OpenRouter exists and is NOT the active source, assume OpenAI
+                if (PROVIDERS.OPENROUTER && !isProviderSource(PROVIDERS.OPENROUTER) && PROVIDERS.OPENAI) {
+                   deducedProvider = PROVIDERS.OPENAI;
+                   console.log(`KeySwitcher: Deduced OPENAI (OpenRouter inactive or N/A).`);
+                }
+                // If OpenRouter doesn't exist, assume OpenAI
+                else if (!PROVIDERS.OPENROUTER && PROVIDERS.OPENAI) {
+                    deducedProvider = PROVIDERS.OPENAI;
+                     console.log(`KeySwitcher: Deduced OPENAI (OpenRouter N/A).`);
+                }
+                // Fallback: Could still be OpenRouter passthrough - harder to be certain
+                else if (PROVIDERS.OPENROUTER) {
+                     console.log(`KeySwitcher: Ambiguous error - could be OpenAI or OpenRouter passthrough. Checking OpenRouter specific codes...`);
+                     // Check for OpenRouter specific codes first if deduction points here
+                     // Let processProviderError handle OpenRouter codes if we deduce it's OR
+                      if (/\bopenrouter\.ai\b|Payment Required/i.test(combinedErrorText)){ // More specific OR check
+                          deducedProvider = PROVIDERS.OPENROUTER;
+                           console.log(`KeySwitcher: Deduced OPENROUTER from specific keywords.`);
+                      } else {
+                           // Defaulting to OpenAI if unsure after OR checks failed and it exists
+                           if (PROVIDERS.OPENAI) {
+                               deducedProvider = PROVIDERS.OPENAI;
+                               console.log(`KeySwitcher: Defaulting deduction to OPENAI due to ambiguity.`);
+                           } else {
+                                deducedProvider = PROVIDERS.OPENROUTER; // If no OpenAI, guess OpenRouter
+                               console.log(`KeySwitcher: Defaulting deduction to OPENROUTER (OpenAI not defined).`);
+                           }
+
+                      }
+                }
+            }
+            // Add more deductions?
+
+            if (deducedProvider) {
+                console.log(`KeySwitcher: Final deduced provider: ${deducedProvider.name}. Processing error...`);
+                await processProviderError(deducedProvider, errorMessage, errorTitle); // Use helper function
+                providerHandled = true; // Mark as handled
+            } else {
+                 console.log("KeySwitcher: Deduction failed - No matching keywords found.");
+            }
+             console.log("KeySwitcher: Finished Pass 2.");
+        } // End of 'if (!providerHandled)' block for Pass 2
+
+        // --- Final log if no provider could handle it ---
+        if(!providerHandled){
+            console.log("KeySwitcher: Could not determine provider for this error via settings or deduction.");
+        }
+        } catch (error) {
+            console.error("KeySwitcher: Error during error processing:", error);
+        } finally {
+            // Release the lock so future errors can be processed
+            errorProcessingLock = false;
         }
     }; // End of toastr.error override
 
+    // --- Rest of the jQuery block remains unchanged ---
     const loadedSecrets = await getSecrets();
     if (!loadedSecrets) { console.error("KeySwitcher: Failed to load secrets on initial load. UI setup aborted."); toastr.error("KeySwitcher: Failed to load secrets.", "Init Error"); return; }
-    await init(loadedSecrets);
+    await init(loadedSecrets); // Call original init function (which is currently empty, but kept for structure)
 
     // Process each provider - Setup UI
     for (const provider of Object.values(PROVIDERS)) {
         console.log(`KeySwitcher: Processing provider UI for: ${provider.name}`);
         const formElement = provider.get_form();
-
-        if (formElement) {
-             if (formElement.querySelector(`#keyswitcher-main-${provider.secret_key}`)) {
-                console.log(`KeySwitcher: UI already exists for ${provider.name}. Forcing update.`);
-                 try {
-                     const data = loadSetData(provider, loadedSecrets);
-                     await updateProviderInfoPanel(provider, data);
-                     await redrawProviderUI(provider, data); // Redraw dynamic sets/bin
-                 } catch (updateError) { console.error(`KeySwitcher: Error updating existing UI for ${provider.name}`, updateError); }
-                continue;
-            }
-
-            try {
+        if (formElement) { // START: if (formElement)
+             if (formElement.querySelector(`#keyswitcher-main-${provider.secret_key}`)) { console.log(`KeySwitcher: UI already exists for ${provider.name}. Forcing update.`); try { const data = loadSetData(provider, loadedSecrets); await updateProviderInfoPanel(provider, data); await redrawProviderUI(provider, data); } catch (updateError) { console.error(`KeySwitcher: Error updating existing UI for ${provider.name}`, updateError); } continue; }
+            try { // START: try create/inject UI
                 const data = loadSetData(provider, loadedSecrets);
                 console.log(`KeySwitcher: ${provider.name} initial data:`, JSON.parse(JSON.stringify(data)));
-
-                const topLevelContainer = document.createElement("div");
-                 topLevelContainer.id = `keyswitcher-main-${provider.secret_key}`;
-                topLevelContainer.classList.add("keyswitcher-provider-container");
-                 topLevelContainer.style.marginTop = "15px"; topLevelContainer.style.border = "1px solid #444"; topLevelContainer.style.padding = "10px"; topLevelContainer.style.borderRadius = "5px";
-
-                const collapsedKey = `keyswitcher_collapsed_${provider.secret_key}`;
-                let isCollapsed = localStorage.getItem(collapsedKey) === "true";
-                const headerBar = document.createElement("div");
-                 headerBar.style.display = "flex"; headerBar.style.alignItems = "center"; headerBar.style.cursor = "pointer"; headerBar.style.userSelect = "none"; headerBar.style.marginBottom = isCollapsed ? "0" : "8px"; headerBar.style.gap = "8px"; headerBar.title = `Click to ${isCollapsed ? 'expand' : 'collapse'} Key Set Manager`;
-                const chevron = document.createElement("span");
-                 chevron.textContent = isCollapsed ? "▶" : "▼"; chevron.style.fontSize = "18px"; chevron.style.transition = "transform 0.2s"; chevron.style.marginRight = "4px"; chevron.style.width = "1em"; chevron.style.textAlign = "center";
-                const heading = document.createElement("h4");
-                 heading.textContent = `${provider.name} - Key Set Manager`; heading.style.margin = "0"; heading.style.flex = "1"; heading.style.fontWeight = "bold";
-                headerBar.appendChild(chevron); headerBar.appendChild(heading); topLevelContainer.appendChild(headerBar);
-
-                const collapsibleContent = document.createElement("div");
-                collapsibleContent.id = `keyswitcher-content-${provider.secret_key}`;
-                collapsibleContent.style.display = isCollapsed ? "none" : "block";
-                collapsibleContent.style.transition = "opacity 0.3s ease-out"; collapsibleContent.style.overflow = "hidden";
-                headerBar.addEventListener("click", () => {
-                    isCollapsed = !isCollapsed; collapsibleContent.style.display = isCollapsed ? "none" : "block"; chevron.textContent = isCollapsed ? "▶" : "▼"; headerBar.style.marginBottom = isCollapsed ? "0" : "8px"; headerBar.title = `Click to ${isCollapsed ? 'expand' : 'collapse'} Key Set Manager`; localStorage.setItem(collapsedKey, isCollapsed ? "true" : "false");
-                });
-
-                // --- Info Panel --- (Remains the same)
-                const infoPanel = document.createElement("div");
-                infoPanel.id = `keyswitcher-info-${provider.secret_key}`;
-                infoPanel.style.marginBottom = "10px"; infoPanel.style.padding = "8px"; infoPanel.style.border = "1px dashed #666"; infoPanel.style.borderRadius = "4px";
-                const activeSetDiv = document.createElement("div"); activeSetDiv.id = `active_set_info_${provider.secret_key}`; activeSetDiv.textContent = "Active Set: Loading..."; infoPanel.appendChild(activeSetDiv);
-                const currentKeyDiv = document.createElement("div"); currentKeyDiv.id = `current_key_${provider.secret_key}`; currentKeyDiv.textContent = "Current Key: Loading...";
-                currentKeyDiv.style.maxWidth = "100%"; currentKeyDiv.style.wordBreak = "break-all"; currentKeyDiv.style.display = "block"; currentKeyDiv.style.margin = "4px 0"; currentKeyDiv.style.padding = "2px 6px"; currentKeyDiv.style.borderRadius = "3px"; currentKeyDiv.style.background = "rgba(255, 255, 255, 0.05)"; infoPanel.appendChild(currentKeyDiv);
-                const switchStatusDiv = document.createElement("div"); switchStatusDiv.id = `switch_key_${provider.secret_key}`; switchStatusDiv.textContent = "Switching: Loading..."; infoPanel.appendChild(switchStatusDiv);
-                const errorToggleDiv = document.createElement("div"); errorToggleDiv.id = `show_${provider.secret_key}_error`; errorToggleDiv.textContent = "Error Details: Loading..."; infoPanel.appendChild(errorToggleDiv);
-                collapsibleContent.appendChild(infoPanel); // Add info panel
-
-                // --- Global Button Container --- (Add new button here)
-                const globalButtonContainer = document.createElement("div");
-                globalButtonContainer.classList.add("key-switcher-buttons", "flex-container", "flex");
-                globalButtonContainer.style.marginBottom = "10px"; globalButtonContainer.style.gap = "5px"; globalButtonContainer.style.flexWrap = "wrap";
-
-                const keySwitchingButton = createButton("Toggle Auto Switching/Removal", async () => { /* ...unchanged... */ keySwitchingEnabled[provider.secret_key] = !keySwitchingEnabled[provider.secret_key]; localStorage.setItem(`switch_key_${provider.secret_key}`, keySwitchingEnabled[provider.secret_key].toString()); const currentSecrets = await getSecrets() || {}; await updateProviderInfoPanel(provider, loadSetData(provider, currentSecrets)); toastr.info(`${provider.name} Auto Switching/Removal: ${keySwitchingEnabled[provider.secret_key] ? 'ON' : 'OFF'}`); });
-                const rotateManuallyButton = createButton("Rotate Key Now", async () => { /* ...unchanged... */ console.log(`KeySwitcher: Manual rotation requested for ${provider.name}`); const currentKeyBefore = await secretsFunctions.findSecret(provider.secret_key); await handleKeyRotation(provider.secret_key); const currentKeyAfter = await secretsFunctions.findSecret(provider.secret_key); if (currentKeyBefore !== currentKeyAfter) { toastr.success(`${provider.name}: Manually rotated to next key.`); } else { toastr.info(`${provider.name}: No other keys available in the active set to rotate to.`); } });
-                const errorToggleButton = createButton("Toggle Error Details Popup", async () => { /* ...unchanged... */ showErrorDetails[provider.secret_key] = !showErrorDetails[provider.secret_key]; localStorage.setItem(`show_${provider.secret_key}_error`, showErrorDetails[provider.secret_key].toString()); const currentSecrets = await getSecrets() || {}; await updateProviderInfoPanel(provider, loadSetData(provider, currentSecrets)); toastr.info(`${provider.name} Error Details Popup: ${showErrorDetails[provider.secret_key] ? 'ON' : 'OFF'}`); });
-
-                // --- NEW "Manage Error Actions" Button ---
-                const manageErrorsButton = createButton("Manage Error Actions", () => {
-                    const errorSection = document.getElementById(`keyswitcher-error-actions-${provider.secret_key}`);
-                    if (errorSection) {
-                        const isHidden = errorSection.style.display === 'none';
-                        errorSection.style.display = isHidden ? 'block' : 'none'; // Toggle visibility
-                        // Optional: scroll into view if revealing
-                        if (isHidden) {
-                            errorSection.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-                        }
-                    } else {
-                        console.error(`KeySwitcher: Error actions section not found for ${provider.name}`);
-                    }
-                });
-                manageErrorsButton.id = `manage_errors_button_${provider.secret_key}`; // Add ID
-
-                globalButtonContainer.appendChild(keySwitchingButton);
-                globalButtonContainer.appendChild(rotateManuallyButton);
-                globalButtonContainer.appendChild(errorToggleButton);
-                globalButtonContainer.appendChild(manageErrorsButton); // Add the new button
-                collapsibleContent.appendChild(globalButtonContainer); // Add button container
-
-                // --- START: Create Error Code Actions UI Section (Initially Hidden) ---
-                const errorActionsSection = document.createElement("div");
-                errorActionsSection.id = `keyswitcher-error-actions-${provider.secret_key}`;
-                errorActionsSection.style.marginTop = "10px"; // Space below buttons
-                errorActionsSection.style.border = "1px solid #668";
-                errorActionsSection.style.borderRadius = "4px";
-                errorActionsSection.style.padding = "10px";
-                errorActionsSection.style.display = "none"; // **** HIDDEN BY DEFAULT ****
-
-                const errorActionsHeader = document.createElement("div");
-                errorActionsHeader.style.fontWeight = "bold";
-                errorActionsHeader.style.marginBottom = "8px";
-                 errorActionsHeader.style.paddingBottom = "5px";
-                 errorActionsHeader.style.borderBottom = "1px solid #557"; // Separator below header
-                errorActionsHeader.textContent = "Automatic Actions on Specific Error Codes";
-                errorActionsSection.appendChild(errorActionsHeader);
-
-                // Content div for the table and help text
-                const errorContent = document.createElement("div");
-                errorContent.id = `keyswitcher-error-content-${provider.secret_key}`;
-                errorActionsSection.appendChild(errorContent);
-
-                // Populate Error Actions Content (Table) - Moved logic here
-                const errorPrefs = loadErrorCodePrefs(provider);
-                const providerErrorMap = PROVIDER_ERROR_MAPPINGS[provider.secret_key];
-                const providerCodes = providerErrorMap ? providerErrorMap.codes : null;
-
-                if (!providerCodes || Object.keys(providerCodes).length === 0) {
-                    errorContent.textContent = "No specific error codes are defined for automatic actions for this provider.";
-                    errorContent.style.fontStyle = "italic";
-                } else {
-                    const table = document.createElement("table");
-                     table.style.width = "100%"; table.style.borderCollapse = "collapse"; table.style.marginTop = "5px";
-                    const thead = table.createTHead();
-                    const headerRow = thead.insertRow();
-                    const thAction = document.createElement("th");
-                     thAction.textContent = "Action"; thAction.style.textAlign = "left"; thAction.style.padding = "4px 8px"; thAction.style.border = "1px solid #555"; thAction.style.background = "#333a40"; headerRow.appendChild(thAction);
-                    const sortedCodes = Object.keys(providerCodes).sort((a, b) => parseInt(a) - parseInt(b));
-                    sortedCodes.forEach(code => {
-                        const thCode = document.createElement("th");
-                         thCode.textContent = code; thCode.title = providerCodes[code]; thCode.style.padding = "4px 8px"; thCode.style.border = "1px solid #555"; thCode.style.background = "#333a40"; thCode.style.minWidth = "40px"; headerRow.appendChild(thCode);
-                    });
-                    const tbody = table.createTBody();
-                    const actions = ['Rotate', 'Remove'];
-                    actions.forEach(actionName => {
-                        const row = tbody.insertRow();
-                        const cellAction = row.insertCell();
-                         cellAction.textContent = actionName; cellAction.style.fontWeight = "bold"; cellAction.style.padding = "4px 8px"; cellAction.style.border = "1px solid #555"; cellAction.style.textAlign = "left";
-                        sortedCodes.forEach(code => {
-                            const cell = row.insertCell();
-                             cell.style.textAlign = "center"; cell.style.border = "1px solid #555"; cell.style.padding = "4px";
-                            const checkbox = document.createElement("input");
-                             checkbox.type = "checkbox"; const actionValue = actionName.toLowerCase(); checkbox.dataset.action = actionValue; checkbox.dataset.code = code; checkbox.title = `${actionName} key automatically on error code ${code}\n(${providerCodes[code]})`;
-                             checkbox.checked = errorPrefs[code] === actionValue;
-                            checkbox.addEventListener('change', async (event) => {
-                                const changedCheckbox = event.target; const currentAction = changedCheckbox.dataset.action; const currentCode = changedCheckbox.dataset.code; const isChecked = changedCheckbox.checked; const currentPrefs = loadErrorCodePrefs(provider);
-                                if (isChecked) {
-                                    currentPrefs[currentCode] = currentAction;
-                                    const otherAction = currentAction === 'rotate' ? 'remove' : 'rotate'; const otherCheckboxSelector = `input[data-action='${otherAction}'][data-code='${currentCode}']`; const otherCheckbox = table.querySelector(otherCheckboxSelector);
-                                    if (otherCheckbox && otherCheckbox.checked) { otherCheckbox.checked = false; }
-                                } else {
-                                    currentPrefs[currentCode] = 'none';
-                                }
-                                saveErrorCodePrefs(provider, currentPrefs);
-                            });
-                            cell.appendChild(checkbox);
-                        });
-                    });
-                    errorContent.appendChild(table); // Add table to content div
-
-                    const helpText = document.createElement("p");
-                     helpText.style.fontSize = "0.9em"; helpText.style.color = "#aaa"; helpText.style.marginTop = "10px"; helpText.style.lineHeight = "1.4";
-                     helpText.innerHTML = `Select the desired automatic action (Rotate Key or Remove Key) for each HTTP status code reported by ${provider.name}. Only one action can be active per code. If neither is checked, no automatic key action will occur for that error, even if 'Toggle Auto Switching/Removal' is enabled. Changes are saved automatically. Hover over error codes for descriptions.`;
-                    errorContent.appendChild(helpText); // Add help text to content div
-                } // End else (providerCodes exist)
-
-                // Append the *entire hidden section* after the buttons
-                collapsibleContent.appendChild(errorActionsSection);
-                // --- END: Create Error Code Actions UI Section ---
-
-
-                // --- Dynamic Sets Container (Placeholder for redrawProviderUI) ---
-                const dynamicSetsContainer = document.createElement("div");
-                dynamicSetsContainer.id = `keyswitcher-sets-dynamic-${provider.secret_key}`; // ID used by redrawProviderUI
-                collapsibleContent.appendChild(dynamicSetsContainer); // Add this *after* error section
-
-                // Add the collapsible content to the main container
-                topLevelContainer.appendChild(collapsibleContent);
-
-                // --- Inject UI ---
-                console.log(`KeySwitcher: Attempting to inject UI for ${provider.name}`);
-                const insertBeforeElement = formElement.querySelector('.form_section_block, hr:not(.key-switcher-hr), button.menu_button');
-                const separatorHr = document.createElement("hr"); separatorHr.className = "key-switcher-hr";
-                if (insertBeforeElement) { console.log(`KeySwitcher: Inserting UI before:`, insertBeforeElement); formElement.insertBefore(separatorHr, insertBeforeElement); formElement.insertBefore(topLevelContainer, insertBeforeElement); }
-                else { console.log(`KeySwitcher: No specific insert point found, appending.`); formElement.appendChild(separatorHr); formElement.appendChild(topLevelContainer); }
-                console.log(`KeySwitcher: UI Injected successfully for ${provider.name}`);
-
-                // --- Call initial updates ---
+                const topLevelContainer = document.createElement("div"); topLevelContainer.id = `keyswitcher-main-${provider.secret_key}`; topLevelContainer.classList.add("keyswitcher-provider-container"); topLevelContainer.style.marginTop = "15px"; topLevelContainer.style.border = "1px solid #444"; topLevelContainer.style.padding = "10px"; topLevelContainer.style.borderRadius = "5px";
+                const collapsedKey = `keyswitcher_collapsed_${provider.secret_key}`; let isCollapsed = localStorage.getItem(collapsedKey) === "true"; const headerBar = document.createElement("div"); headerBar.style.display = "flex"; headerBar.style.alignItems = "center"; headerBar.style.cursor = "pointer"; headerBar.style.userSelect = "none"; headerBar.style.marginBottom = isCollapsed ? "0" : "8px"; headerBar.style.gap = "8px"; headerBar.title = `Click to ${isCollapsed ? 'expand' : 'collapse'} Key Set Manager`; const chevron = document.createElement("span"); chevron.textContent = isCollapsed ? "▶" : "▼"; chevron.style.fontSize = "18px"; chevron.style.transition = "transform 0.2s"; chevron.style.marginRight = "4px"; chevron.style.width = "1em"; chevron.style.textAlign = "center"; const heading = document.createElement("h4"); heading.textContent = `${provider.name} - Key Set Manager`; heading.style.margin = "0"; heading.style.flex = "1"; heading.style.fontWeight = "bold"; headerBar.appendChild(chevron); headerBar.appendChild(heading); topLevelContainer.appendChild(headerBar); const collapsibleContent = document.createElement("div"); collapsibleContent.id = `keyswitcher-content-${provider.secret_key}`; collapsibleContent.style.display = isCollapsed ? "none" : "block"; collapsibleContent.style.transition = "opacity 0.3s ease-out"; collapsibleContent.style.overflow = "hidden"; headerBar.addEventListener("click", () => { isCollapsed = !isCollapsed; collapsibleContent.style.display = isCollapsed ? "none" : "block"; chevron.textContent = isCollapsed ? "▶" : "▼"; headerBar.style.marginBottom = isCollapsed ? "0" : "8px"; headerBar.title = `Click to ${isCollapsed ? 'expand' : 'collapse'} Key Set Manager`; localStorage.setItem(collapsedKey, isCollapsed ? "true" : "false"); });
+                const infoPanel = document.createElement("div"); infoPanel.id = `keyswitcher-info-${provider.secret_key}`; infoPanel.style.marginBottom = "10px"; infoPanel.style.padding = "8px"; infoPanel.style.border = "1px dashed #666"; infoPanel.style.borderRadius = "4px"; const activeSetDiv = document.createElement("div"); activeSetDiv.id = `active_set_info_${provider.secret_key}`; infoPanel.appendChild(activeSetDiv); const currentKeyDiv = document.createElement("div"); currentKeyDiv.id = `current_key_${provider.secret_key}`; currentKeyDiv.style.maxWidth = "100%"; currentKeyDiv.style.wordBreak = "break-all"; currentKeyDiv.style.display = "block"; currentKeyDiv.style.margin = "4px 0"; currentKeyDiv.style.padding = "2px 6px"; currentKeyDiv.style.borderRadius = "3px"; currentKeyDiv.style.background = "rgba(255, 255, 255, 0.05)"; infoPanel.appendChild(currentKeyDiv); const switchStatusDiv = document.createElement("div"); switchStatusDiv.id = `switch_key_${provider.secret_key}`; infoPanel.appendChild(switchStatusDiv); const errorToggleDiv = document.createElement("div"); errorToggleDiv.id = `show_${provider.secret_key}_error`; infoPanel.appendChild(errorToggleDiv); collapsibleContent.appendChild(infoPanel);
+                const globalButtonContainer = document.createElement("div"); globalButtonContainer.classList.add("key-switcher-buttons", "flex-container", "flex"); globalButtonContainer.style.marginBottom = "10px"; globalButtonContainer.style.gap = "5px"; globalButtonContainer.style.flexWrap = "wrap"; const keySwitchingButton = createButton("Toggle Auto Switching/Removal", async () => { keySwitchingEnabled[provider.secret_key] = !keySwitchingEnabled[provider.secret_key]; localStorage.setItem(`switch_key_${provider.secret_key}`, keySwitchingEnabled[provider.secret_key].toString()); const currentSecrets = await getSecrets() || {}; await updateProviderInfoPanel(provider, loadSetData(provider, currentSecrets)); toastr.info(`${provider.name} Auto Switching/Removal: ${keySwitchingEnabled[provider.secret_key] ? 'ON' : 'OFF'}`); }, "fa-sync-alt"); const rotateManuallyButton = createButton("Rotate Key Now", async () => { console.log(`KeySwitcher: Manual rotation requested for ${provider.name}`); const currentKeyBefore = await secretsFunctions.findSecret(provider.secret_key); await handleKeyRotation(provider.secret_key); const currentKeyAfter = await secretsFunctions.findSecret(provider.secret_key); if (currentKeyBefore !== currentKeyAfter) { toastr.success(`${provider.name}: Manually rotated to next key.`); } else { toastr.info(`${provider.name}: No other keys available in the active set to rotate to.`); } }, "fa-random"); const errorToggleButton = createButton("Toggle Error Details Popup", async () => { showErrorDetails[provider.secret_key] = !showErrorDetails[provider.secret_key]; localStorage.setItem(`show_${provider.secret_key}_error`, showErrorDetails[provider.secret_key].toString()); const currentSecrets = await getSecrets() || {}; await updateProviderInfoPanel(provider, loadSetData(provider, currentSecrets)); toastr.info(`${provider.name} Error Details Popup: ${showErrorDetails[provider.secret_key] ? 'ON' : 'OFF'}`); }, "fa-info-circle"); const manageErrorsButton = createButton("Manage Error Actions", () => { const errorSection = document.getElementById(`keyswitcher-error-actions-${provider.secret_key}`); if (errorSection) { const isHidden = errorSection.style.display === 'none'; errorSection.style.display = isHidden ? 'block' : 'none'; if (isHidden) { errorSection.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); } } else { console.error(`KeySwitcher: Error actions section not found for ${provider.name}`); } }, "fa-cogs"); manageErrorsButton.id = `manage_errors_button_${provider.secret_key}`; globalButtonContainer.appendChild(keySwitchingButton); globalButtonContainer.appendChild(rotateManuallyButton); globalButtonContainer.appendChild(errorToggleButton); globalButtonContainer.appendChild(manageErrorsButton); collapsibleContent.appendChild(globalButtonContainer);
+                const errorActionsSection = document.createElement("div"); errorActionsSection.id = `keyswitcher-error-actions-${provider.secret_key}`; errorActionsSection.style.marginTop = "10px"; errorActionsSection.style.border = "1px solid #668"; errorActionsSection.style.borderRadius = "4px"; errorActionsSection.style.padding = "10px"; errorActionsSection.style.display = "none"; const errorActionsHeader = document.createElement("div"); errorActionsHeader.style.fontWeight = "bold"; errorActionsHeader.style.marginBottom = "8px"; errorActionsHeader.style.paddingBottom = "5px"; errorActionsHeader.style.borderBottom = "1px solid #557"; errorActionsHeader.textContent = "Automatic Actions on Specific Error Codes"; errorActionsSection.appendChild(errorActionsHeader); const errorContent = document.createElement("div"); errorContent.id = `keyswitcher-error-content-${provider.secret_key}`; errorActionsSection.appendChild(errorContent); const errorPrefs = loadErrorCodePrefs(provider); const providerErrorMap = PROVIDER_ERROR_MAPPINGS[provider.secret_key]; const providerCodes = providerErrorMap ? providerErrorMap.codes : null; if (!providerCodes || Object.keys(providerCodes).length === 0) { errorContent.textContent = "No specific error codes defined for this provider."; errorContent.style.fontStyle = "italic"; } else { const table = document.createElement("table"); table.style.width = "100%"; table.style.borderCollapse = "collapse"; table.style.marginTop = "5px"; const thead = table.createTHead(); const headerRow = thead.insertRow(); const thAction = document.createElement("th"); thAction.textContent = "Action"; thAction.style.textAlign = "left"; thAction.style.padding = "4px 8px"; thAction.style.border = "1px solid #555"; thAction.style.background = "#333a40"; headerRow.appendChild(thAction); const sortedCodes = Object.keys(providerCodes).sort((a, b) => parseInt(a) - parseInt(b)); sortedCodes.forEach(code => { const thCode = document.createElement("th"); thCode.textContent = code; thCode.title = providerCodes[code]; thCode.style.padding = "4px 8px"; thCode.style.border = "1px solid #555"; thCode.style.background = "#333a40"; thCode.style.minWidth = "40px"; headerRow.appendChild(thCode); }); const tbody = table.createTBody(); const actions = ['Rotate', 'Remove']; actions.forEach(actionName => { const row = tbody.insertRow(); const cellAction = row.insertCell(); cellAction.textContent = actionName; cellAction.style.fontWeight = "bold"; cellAction.style.padding = "4px 8px"; cellAction.style.border = "1px solid #555"; cellAction.style.textAlign = "left"; sortedCodes.forEach(code => { const cell = row.insertCell(); cell.style.textAlign = "center"; cell.style.border = "1px solid #555"; cell.style.padding = "4px"; const checkbox = document.createElement("input"); checkbox.type = "checkbox"; const actionValue = actionName.toLowerCase(); checkbox.dataset.action = actionValue; checkbox.dataset.code = code; checkbox.title = `${actionName} key automatically on error code ${code}\n(${providerCodes[code]})`; checkbox.checked = errorPrefs[code] === actionValue; checkbox.addEventListener('change', async (event) => { const changedCheckbox = event.target; const currentAction = changedCheckbox.dataset.action; const currentCode = changedCheckbox.dataset.code; const isChecked = changedCheckbox.checked; const currentPrefs = loadErrorCodePrefs(provider); if (isChecked) { currentPrefs[currentCode] = currentAction; const otherAction = currentAction === 'rotate' ? 'remove' : 'rotate'; const otherCheckboxSelector = `input[data-action='${otherAction}'][data-code='${currentCode}']`; const otherCheckbox = table.querySelector(otherCheckboxSelector); if (otherCheckbox && otherCheckbox.checked) { otherCheckbox.checked = false; } } else { currentPrefs[currentCode] = 'none'; } saveErrorCodePrefs(provider, currentPrefs); }); cell.appendChild(checkbox); }); }); errorContent.appendChild(table); const helpText = document.createElement("p"); helpText.style.fontSize = "0.9em"; helpText.style.color = "#aaa"; helpText.style.marginTop = "10px"; helpText.style.lineHeight = "1.4"; helpText.innerHTML = `Select the desired automatic action... Hover over error codes for descriptions.`; errorContent.appendChild(helpText); } collapsibleContent.appendChild(errorActionsSection);
+                const dynamicSetsContainer = document.createElement("div"); dynamicSetsContainer.id = `keyswitcher-sets-dynamic-${provider.secret_key}`; collapsibleContent.appendChild(dynamicSetsContainer); topLevelContainer.appendChild(collapsibleContent);
+                console.log(`KeySwitcher: Attempting to inject UI for ${provider.name}`); const insertBeforeElement = formElement.querySelector('.form_section_block, hr:not(.key-switcher-hr), button.menu_button'); const separatorHr = document.createElement("hr"); separatorHr.className = "key-switcher-hr"; if (insertBeforeElement) { console.log(`KeySwitcher: Inserting UI before:`, insertBeforeElement); formElement.insertBefore(separatorHr, insertBeforeElement); formElement.insertBefore(topLevelContainer, insertBeforeElement); } else { console.log(`KeySwitcher: No specific insert point found, appending.`); formElement.appendChild(separatorHr); formElement.appendChild(topLevelContainer); } console.log(`KeySwitcher: UI Injected successfully for ${provider.name}`);
                 await updateProviderInfoPanel(provider, data);
-                await redrawProviderUI(provider, data); // Draw sets/bin into dynamicSetsContainer
+                await redrawProviderUI(provider, data);
 
-            } catch (injectionError) {
+            } catch (injectionError) { // Catch errors during UI creation/injection
                  console.error(`KeySwitcher: *** ERROR during UI creation/injection for ${provider.name}:`, injectionError);
                  toastr.error(`KeySwitcher failed to create UI for ${provider.name}. Check console.`, "UI Error");
             } // --- End Try/Catch for UI creation ---
@@ -1255,15 +1466,11 @@ jQuery(async () => {
     } // --- End of 'for (const provider of Object.values(PROVIDERS))' loop ---
 
     // --- Event Listeners --- (Remain unchanged)
-     scriptFunctions.eventSource.on(scriptFunctions.event_types.CHATCOMPLETION_MODEL_CHANGED, async (model) => {
-         console.log("KeySwitcher: Model changed."); try { const currentSecrets = await getSecrets() || {}; for (const provider of Object.values(PROVIDERS)) { if (isProviderSource(provider)) { console.log(`KeySwitcher: Active source now ${provider.name}. Updating.`); const data = loadSetData(provider, currentSecrets); await updateProviderInfoPanel(provider, data); if (keySwitchingEnabled[provider.secret_key]) { await handleKeyRotation(provider.secret_key); } const contentContainer = document.getElementById(`keyswitcher-content-${provider.secret_key}`); if (!contentContainer || contentContainer.style.display !== 'none') { await redrawProviderUI(provider, data); } break; } } } catch (e) { console.error("KeySwitcher: Error during MODEL_CHANGED:", e); } });
-     scriptFunctions.eventSource.on(scriptFunctions.event_types.CHAT_COMPLETION_SETTINGS_READY, async () => {
-         console.log("KeySwitcher: Settings ready."); try { const currentSecrets = await getSecrets() || {}; for (const provider of Object.values(PROVIDERS)) { if (isProviderSource(provider)) { console.log(`KeySwitcher: Initial source ${provider.name}.`); const data = loadSetData(provider, currentSecrets); const container = document.getElementById(`keyswitcher-main-${provider.secret_key}`); if (container) { await updateProviderInfoPanel(provider, data); await redrawProviderUI(provider, data); if (keySwitchingEnabled[provider.secret_key]) { await handleKeyRotation(provider.secret_key); } else { const activeKey = await secretsFunctions.findSecret(provider.secret_key); const keyDisplay = document.getElementById(`current_key_${provider.secret_key}`); if (keyDisplay && keyDisplay.textContent !== `Current Key: ${activeKey || 'N/A'}`) { keyDisplay.textContent = `Current Key: ${activeKey || 'N/A'}`; } } } else { console.warn(`KeySwitcher: UI container not found for ${provider.name} on SETTINGS_READY.`); } break; } } } catch(e) { console.error("KeySwitcher: Error during SETTINGS_READY:", e); } });
+     scriptFunctions.eventSource.on(scriptFunctions.event_types.CHATCOMPLETION_MODEL_CHANGED, async (model) => { console.log("KeySwitcher: Model changed."); try { const currentSecrets = await getSecrets() || {}; for (const provider of Object.values(PROVIDERS)) { if (isProviderSource(provider)) { console.log(`KeySwitcher: Active source now ${provider.name}. Updating.`); const data = loadSetData(provider, currentSecrets); await updateProviderInfoPanel(provider, data); if (keySwitchingEnabled[provider.secret_key]) { await handleKeyRotation(provider.secret_key); } const contentContainer = document.getElementById(`keyswitcher-content-${provider.secret_key}`); if (!contentContainer || contentContainer.style.display !== 'none') { await redrawProviderUI(provider, data); } break; } } } catch (e) { console.error("KeySwitcher: Error during MODEL_CHANGED:", e); } });
+     scriptFunctions.eventSource.on(scriptFunctions.event_types.CHAT_COMPLETION_SETTINGS_READY, async () => { console.log("KeySwitcher: Settings ready."); try { const currentSecrets = await getSecrets() || {}; for (const provider of Object.values(PROVIDERS)) { if (isProviderSource(provider)) { console.log(`KeySwitcher: Initial source ${provider.name}.`); const data = loadSetData(provider, currentSecrets); const container = document.getElementById(`keyswitcher-main-${provider.secret_key}`); if (container) { await updateProviderInfoPanel(provider, data); await redrawProviderUI(provider, data); if (keySwitchingEnabled[provider.secret_key]) { await handleKeyRotation(provider.secret_key); } else { const activeKey = await secretsFunctions.findSecret(provider.secret_key); const keyDisplay = document.getElementById(`current_key_${provider.secret_key}`); if (keyDisplay && keyDisplay.textContent !== `Current Key: ${activeKey || 'N/A'}`) { keyDisplay.textContent = `Current Key: ${activeKey || 'N/A'}`; } } } else { console.warn(`KeySwitcher: UI container not found for ${provider.name} on SETTINGS_READY.`); } break; } } } catch(e) { console.error("KeySwitcher: Error during SETTINGS_READY:", e); } });
 
     console.log("MultiProviderKeySwitcher: Initialization complete.");
 }); // --- END of jQuery(async () => { ... }) ---
-
-
 
 // Export the plugin's init function - CORRECTED
 export default init;
